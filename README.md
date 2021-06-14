@@ -95,8 +95,6 @@ if __name__ == "__main__":
             loss.backward()
 ```
 ### How to
-A tensorflow implementation of conv3d based encoder_decoder for the tooth project
-
 ```bash
 # Clone this repository and install the code
 $ https://github.com/JeanMaximilienCadic/ctdataset
