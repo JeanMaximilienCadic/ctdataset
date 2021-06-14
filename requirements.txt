@@ -1,0 +1,6 @@
+torch==1.8.1
+tqdm
+gnutools-python
+nmesh
+numpy
+ctnet
