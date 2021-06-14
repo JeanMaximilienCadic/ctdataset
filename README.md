@@ -40,13 +40,6 @@ setup(
 
 The main execution:
 ```python
-import argparse
-from ctdataset.dataset import CTDataset
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-from ctnet import CTNet
-from torch.optim import Adam
-from torch.nn import BCELoss
 if __name__ == "__main__":
     import argparse
     from ctdataset.dataset import CTDataset
