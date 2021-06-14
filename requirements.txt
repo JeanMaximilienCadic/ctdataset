@@ -3,4 +3,3 @@ tqdm
 gnutools-python
 nmesh
 numpy
-ctnet
