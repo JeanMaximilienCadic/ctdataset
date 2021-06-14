@@ -12,34 +12,37 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 class CTDataset(Dataset):
     def __init__(self,
-                 ply_folder,
-                 xpath=None,
+                 ply_folder=None,
+                 x_path=None,
                  exploration_ratio="1.0",
                  bbox_w = 24,
                  dim=64,
-                 strech_box=False):
+                 strech_box=False,
+                 caching=True):
         self.strech_box = strech_box
         self.cache = {}
+        self.load_function = self.load_ply
+        self.kwargs = {
+            "dim": dim,
+            "bbox_w": bbox_w,
+            "strech_box": strech_box
+        }
         if ply_folder is not None:
             ids = [(
                 f"{ply_folder}/{dir}/x.ply",
                 f"{ply_folder}/{dir}/y.ply"
             ) for dir in os.listdir(ply_folder) if os.path.isdir(f"{ply_folder}/{dir}")]
-            kwargs = {
-                "dim": dim,
-                "bbox_w": bbox_w,
-                "strech_box": strech_box
-            }
-            self.load_function = self.load_ply
-            with ProcessPoolExecutor() as e:
-                fs = [e.submit(self.load_ply_file, x_path, y_path, **kwargs) for (x_path, y_path) in ids]
-                for f in tqdm(as_completed(fs), total=len(fs), desc="Caching"):
-                    ID, x_vertices, y_vertices, ops = f._result
-                    self.cache[ID] = (x_vertices, y_vertices, ops)
+            if caching:
+                with ProcessPoolExecutor() as e:
+                    fs = [e.submit(self.load_ply_file, x_path, y_path, **self.kwargs) for (x_path, y_path) in ids]
+                    for f in tqdm(as_completed(fs), total=len(fs), desc="Caching"):
+                        ID, x_vertices, y_vertices, ops = f._result
+                        self.cache[ID] = (x_vertices, y_vertices, ops)
         else:
-            ids = [(xpath, xpath)]
-            self.load_function = self.load_ply
-
+            ids = [(x_path, x_path)]
+            if caching:
+                ID, x_vertices, x_vertices, ops = self.load_ply_file(x_path, x_path, **self.kwargs)
+                self.cache[ID] = (x_vertices, x_vertices, ops)
         self.ids = ids
         self.bbox_w = bbox_w
         self.dim = dim
@@ -73,7 +76,10 @@ class CTDataset(Dataset):
         x_path, y_path = self.ids[index]
         ID = name(parent(x_path))
         try:
-            (x_vertices, y_vertices, ops) = self.cache[ID]
+            try:
+                (x_vertices, y_vertices, ops) = self.cache[ID]
+            except:
+                (_, x_vertices, y_vertices, ops)  = self.load_ply_file(x_path, y_path, **self.kwargs)
             return self.cp2matrix(x_vertices, dim=self.dim), \
                    self.cp2matrix(y_vertices, dim=self.dim), \
                    ops, \
