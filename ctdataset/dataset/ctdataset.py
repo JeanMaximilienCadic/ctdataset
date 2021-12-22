@@ -1,110 +1,104 @@
-import os
 from torch.utils.data import Dataset
 import random
 from nmesh import NMesh
 from ctdataset.functional import *
 import numpy as np
-import logging
-from gnutools.fs import name, parent
-from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from gnutools.fs import name, parent, listfiles
+from gnutools.concurrent import ProcessPoolExecutorBar
 
-
-class CTDataset(Dataset):
+class FolderVox:
     def __init__(self,
-                 ply_folder=None,
-                 x_path=None,
-                 exploration_ratio="1.0",
-                 bbox_w = 24,
-                 dim=64,
-                 strech_box=False,
-                 caching=True):
-        self.strech_box = strech_box
-        self.cache = {}
-        self.load_function = self.load_ply
-        self.kwargs = {
-            "dim": dim,
-            "bbox_w": bbox_w,
-            "strech_box": strech_box
-        }
-        if ply_folder is not None:
-            ids = [(
-                f"{ply_folder}/{dir}/x.ply",
-                f"{ply_folder}/{dir}/y.ply"
-            ) for dir in os.listdir(ply_folder) if os.path.isdir(f"{ply_folder}/{dir}")]
-            if caching:
-                with ProcessPoolExecutor() as e:
-                    fs = [e.submit(self.load_ply_file, x_path, y_path, **self.kwargs) for (x_path, y_path) in ids]
-                    for f in tqdm(as_completed(fs), total=len(fs), desc="Caching"):
-                        ID, x_vertices, y_vertices, ops = f._result
-                        self.cache[ID] = (x_vertices, y_vertices, ops)
-        else:
-            ids = [(x_path, x_path)]
-            if caching:
-                ID, x_vertices, x_vertices, ops = self.load_ply_file(x_path, x_path, **self.kwargs)
-                self.cache[ID] = (x_vertices, x_vertices, ops)
-        self.ids = ids
-        self.bbox_w = bbox_w
-        self.dim = dim
-        self.size = int(len(ids)*eval(exploration_ratio)) if type(eval(exploration_ratio))==float else \
-            int(eval(exploration_ratio)(len(ids)))
+                 folder,
+                 dims=(12, 96),
+                 return_matrix=False):
+        self._return_matrix = return_matrix
+        self._folder = folder
+        self._dims = dims
+        self.x, self.y = self.run()
+
+    def run(self):
+        x, y = self.crop_from_folder(self._folder, self._dims[0])
+        x, y = self.voxelize(x, y, dims=self._dims, return_matrix=self._return_matrix)
+        return x, y
 
     @staticmethod
-    def load_ply_file(x_path, y_path, dim, bbox_w, strech_box):
-        ID = name(parent(x_path))
-        ops = []
-        if not os.path.exists(y_path):
-            y_path = x_path
-        x, y = NMesh(x_path), NMesh(y_path)
-        x_vertices, y_vertices = x.vertices, y.vertices
-        T = np.min(np.array([np.min(x_vertices, axis=0), np.min(y_vertices, axis=0)]), axis=0)
-        x_vertices, y_vertices = x_vertices-T, y_vertices-T,
-
-        scale2 = bbox_w if not strech_box else np.max(x_vertices, axis=0)
-        x_vertices, y_vertices = x_vertices/scale2, y_vertices/scale2
-
-        logging.warning(f"Streching {np.max(x_vertices, axis=0)}") if strech_box else None
-
-        x_vertices, y_vertices = np.array(x_vertices*(dim-1), dtype=int), np.array(y_vertices*(dim-1), dtype=int)
-        ops.append(("scale", 1/(dim-1)))
-        ops.append(("scale", scale2))
-        ops.append(("translation", T))
-        x_vertices, y_vertices = np.unique(x_vertices, axis=0),np.unique(y_vertices, axis=0)
-        return ID, x_vertices, y_vertices, ops
-
-    def load_ply(self, index):
-        x_path, y_path = self.ids[index]
-        ID = name(parent(x_path))
-        try:
-            try:
-                (x_vertices, y_vertices, ops) = self.cache[ID]
-            except:
-                (_, x_vertices, y_vertices, ops)  = self.load_ply_file(x_path, y_path, **self.kwargs)
-            return self.cp2matrix(x_vertices, dim=self.dim), \
-                   self.cp2matrix(y_vertices, dim=self.dim), \
-                   ops, \
-                   name(parent(x_path)),\
-                   x_path
-        except AssertionError as e:
-            print(x_path)
-            raise AssertionError
-
-    def __getitem__(self, index):
-        return self.load_function(index)
-
-    def __len__(self):
-        return self.size
-
-    def shuffle(self):
-        ids = list(range(len(self.ids)))
-        random.shuffle(ids)
-        self.ids = list(np.array(self.ids)[ids])
+    def crop_from_folder(folder, dim):
+        x = NMesh(list=[NMesh(f"{folder}/antagonistscan.ply"), NMesh(f"{folder}/preparationscan.ply")])
+        y = NMesh(f"{folder}/crown.ply")
+        T = y.centroid
+        bbox = [[-dim, -dim, -dim], [dim, dim, dim]]
+        for m in [x, y]:
+            m.translate(-T)
+            m.crop_bounding_box(bbox)
+        return x, y
 
     @staticmethod
-    def cp2matrix(cp, dim=64):
+    def voxelize(x, y, dims=(12, 96), return_matrix=True):
+        U = np.ones(3)*dims[0]
+        x_vertices = x.vertices
+        y_vertices = y.vertices
+        d = {}
+        for cat, v in [("x", x_vertices), ("y", y_vertices)]:
+            v+=U
+            v/=2*U
+            d[cat] = np.unique(np.array(v*(dims[1]-1), dtype=np.uint8), axis=0)
+        (x, y) = (FolderVox.cp2matrix(d["x"], dims[1]), FolderVox.cp2matrix(d["y"], dims[1])) if return_matrix else (d["x"], d["y"])
+        return x, y
+
+    @staticmethod
+    def cp2matrix(cp, dim=96):
         return cp2matrix(cp, dim)
 
     @staticmethod
     def matrix2cp(M):
         return matrix2cp(M)
+
+
+class CTDataset(Dataset):
+    def __init__(
+            self,
+            ply_root,
+            cls         = FolderVox,
+            dims        = (12, 96),
+            cache       = False,
+            limit       = -1
+    ):
+
+        self.dims = dims
+        self.cls = cls
+        self.cache = cache
+        folders = list(set(list([parent(file) for file in listfiles(ply_root, [".ply"])])))[:limit]
+        bar = ProcessPoolExecutorBar()
+        _args = (self.dims, self.cache, self.cls)
+        bar.submit([(self.load_folder, folder, *_args) for folder in folders])
+        self.records  = dict([(k, r[1]) for k, r in enumerate(bar._results)])
+        self.ids    = list(self.records.keys())
+        self.size   = len(self.ids)
+
+    @staticmethod
+    def load_folder(folder, dims, cache, cls):
+        return (name(folder), cls(folder, dims, return_matrix=cache))
+
+    def __getitem__(self, index):
+        if not self.cache:
+            return cp2matrix(self.records[index].x, self.dims[1]), \
+                   cp2matrix(self.records[index].y, self.dims[1]), \
+                   [], \
+                   str(index), \
+                   ""
+        else:
+            return self.records[index].x, \
+                   self.records[index].y, \
+                   [], \
+                   str(index), \
+                   ""
+
+    def __len__(self):
+        return self.size
+
+    def shuffle(self):
+        random.shuffle(self.ids)
+
+
+
 
