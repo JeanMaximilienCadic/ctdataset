@@ -1,4 +1,4 @@
-torch==1.8.1
+torch==2.8.0
 tqdm
 gnutools-python
 nmesh
